@@ -1,0 +1,53 @@
+name: Publish verified OMEGA update
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'releases/v*/omega-update.zip.b64'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version, e.g. 4.0.0 (defaults to latest folder)'
+        type: string
+        required: false
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select and verify version
+        env:
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$VERSION"
+          if [ -z "$version" ]; then
+            version=$(find releases -maxdepth 2 -type f -name 'omega-update.zip.b64' | sed -n 's@^releases/v\([^/]*\)/omega-update.zip.b64$@\1@p' | sort -V | tail -1)
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid release version'; exit 1; }
+          test -f "releases/v${version}/omega-update.zip.b64"
+          mkdir -p "$RUNNER_TEMP/omega"
+          base64 --decode "releases/v${version}/omega-update.zip.b64" > "$RUNNER_TEMP/omega/omega-update.zip"
+          python3 scripts/verify_release.py "$version" "$RUNNER_TEMP/omega/omega-update.zip"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Publish a GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          notes="releases/${tag}/notes.md"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release ${tag} exists; leaving it untouched."
+            exit 0
+          fi
+          if [ -f "$notes" ]; then
+            gh release create "$tag" "$RUNNER_TEMP/omega/omega-update.zip" --target "$GITHUB_SHA" --title "OMEGA NEXT ${VERSION}" --notes-file "$notes"
+          else
+            gh release create "$tag" "$RUNNER_TEMP/omega/omega-update.zip" --target "$GITHUB_SHA" --title "OMEGA NEXT ${VERSION}" --notes "Verified automatic update package."
+          fi
